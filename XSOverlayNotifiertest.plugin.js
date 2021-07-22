@@ -1,5 +1,7 @@
 /**
 * @name XSOverlayNotifer
+* @author Arsen
+* @description Sends Discord notifications to XSOverlay!
 * @version 0.1
 */
 
