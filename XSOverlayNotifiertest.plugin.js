@@ -1,40 +1,941 @@
 /**
- * @name XSOverlayNotifier
- * @description Sends your notifications to XSOverlay.
- * @version 0.1
- * @author Arsenic
- */
+* @name XSOverlayNotifer
+* @version 0.1
+*/
 
-module.exports = class XSOverlayNotifier {
+const request = require("request");
+const fs = require("fs");
+const path = require("path");
 
-  start() 
-  {
+var cooldowntime = Date.now();
 
-    console.log("AAAAAAA");
-    let data = JSON.stringify(
-    {
-      messageType: 1,
-      index: 0,
-      timeout: 5,
-      height: 100,
-      opacity: 1,
-      volume: 0,
-      audioPath: '',
-      title: "formatTitle(channel, msg, author)",
-      content: "formattedMessage",
-      useBase64Icon: true,
-      //icon: Buffer.from(buffer).toString('base64'),
-      sourceApp: 'XSOverlay-Discord-Notifications'
-    });
-
-    let server = require('dgram').createSocket('udp4');
-    server.send(data, 42069, '127.0.0.1', () => {
-      server.close();
-    });
-  }
-
-  stop()
-  {
-
-  }
+const config = {
+    info: {
+        name: "XSOverlayNotifer",
+        authors: [
+            {
+                name: "Arsen",
+                discord_id: "0000000000000000",
+                github_username: "none"
+            }
+        ],
+        version: "0.1",
+        description: "Sends Discord notifications to XSOverlay!",
+    },
+    defaultConfig: [
+        {
+            type: "slider",
+            name: "Notification display time (seconds)",
+            note: "Sets the amount of time for a notification to stay on-screen.",
+            min: 1,
+            max: 25,
+            id: "notiTime",
+            value: 3,
+            markers: [...Array(20).keys()].map(e => e += 1),
+            stickToMarkers: true
+        },
+        {
+          type: "slider",
+          name: "Notification Opacity",
+          note: "Sets the opacity of the notifications in XS",
+          min: 1,
+          max: 10,
+          id: "opacity",
+          markers: [...Array(10).keys()].map(e => e += 1),
+          stickToMarkers: true,
+          value: 9
+        }
+    ]
 };
+
+module.exports = !global.ZeresPluginLibrary ? class {
+    constructor() {
+        this._config = config;
+    }
+
+    load() {
+        BdApi.showConfirmationModal("Library plugin is needed",
+            `The library plugin needed for AQWERT'sPluginBuilder is missing. Please click Download Now to install it.`, {
+            confirmText: "Download",
+            cancelText: "Cancel",
+            onConfirm: () => {
+                request.get("https://rauenzi.github.io/BDPluginLibrary/release/0PluginLibrary.plugin.js", (error, response, body) => {
+                    if (error)
+                        return electron.shell.openExternal("https://betterdiscord.net/ghdl?url=https://raw.githubusercontent.com/rauenzi/BDPluginLibrary/master/release/0PluginLibrary.plugin.js");
+
+                    fs.writeFileSync(path.join(BdApi.Plugins.folder, "0PluginLibrary.plugin.js"), body);
+                });
+            }
+        });
+    }
+
+    start() {}
+
+    stop() {}
+} : (([Plugin, Library]) => {
+    
+    const {DiscordModules, WebpackModules, PluginUtilities, Structs, Settings, Patcher} = Library;
+    const {React, ReactDOM, Dispatcher, UserStore, ChannelStore, NavigationUtils, UserStatusStore, SelectedChannelStore, GuildMemberStore, UserProfileModals, InviteActions} = DiscordModules;
+    const MuteStore = WebpackModules.getByProps("isSuppressEveryoneEnabled");
+    const isMentioned = WebpackModules.getByProps('isRawMessageMentioned');
+    const Markdown = WebpackModules.getByProps("parse", "parseTopic");
+    const AckUtils = WebpackModules.getByProps("bulkAck", "ack");
+    const CallJoin = WebpackModules.findByDisplayName("CallJoin");
+    const ImagePlaceholder = WebpackModules.findByDisplayName("ImagePlaceholder");
+    const PersonAdd = WebpackModules.findByDisplayName("PersonAdd");
+    const CloseIcon = WebpackModules.findByDisplayName("Close");
+    const StickerIcon = WebpackModules.findByDisplayName("StickerSmall");
+    const Avatar = WebpackModules.getByProps("AnimatedAvatar");
+
+    const colors = {
+        online: "#43b581",
+        dnd: "#f04747",
+        away: "#faa61a",
+        offline: "#747f8d",
+        brand: "#7289da"
+    }
+
+    const blurple = '#5865f2';
+    const booster = '#ff73fa';
+
+    const classes = {
+        ...WebpackModules.getByProps("horizontal", "flex", "justifyStart"),
+        ...WebpackModules.getByProps("avatar", "alt")
+    }
+    /* Created by Strencher */
+    const Spring = WebpackModules.getByProps("useSpring");
+    const {useSpring, animated} = Spring;
+
+    const createStore = state => {
+        const listeners = new Set();
+
+        const api = {
+            getState(collector) {
+                return collector ? collector(state) : state;
+            },
+            setState(partial) {
+                const partialState = typeof partial === "function" ? partial(state) : partial;
+                state = Object.assign({}, state, partialState);
+                listeners.forEach(listener => {
+                    listener(state);
+                });
+            },
+            get listeners() {return listeners;},
+            on(listener) {
+                if (listeners.has(listener)) return;
+                listeners.add(listener);
+
+                return () => listeners.delete(listener);
+            },
+            off(listener) {
+                return listeners.delete(listener);
+            }
+        };
+
+        function useState(collector) {
+            collector = typeof collector === "function" ? collector : e => e;
+            const forceUpdate = React.useReducer(e => e + 1, 0)[1];
+            
+            React.useEffect(() => {
+                const handler = () => forceUpdate();
+
+                listeners.add(handler);
+
+                return () => listeners.delete(handler);
+            }, []);
+
+            return collector(api.getState());
+        }
+
+        return [useState, api];
+    }
+
+    const {useEffect, useState} = React;
+
+    const [useStore, api] = createStore({toasts: []});
+
+    const QWERTLib = new class {
+        Toasts = {
+            _api: api,
+            get RunningToasts() {return api.getState(e => e.toasts)},
+
+            Toast: function Toast(props) {
+                const {children = [], avatar, id, author, onClick = _ => {}, color, time = 3000, onManualClose, icon} = props;
+                const [readyToClose, setReadyToClose] = useState(false);
+
+                useEffect(_ => {
+                    if (readyToClose) {
+                        api.setState(state => {
+                            const index = state.toasts.findIndex(e => e.id === id);
+                            if (index < 0) return state;
+                            state.toasts.splice(index, 1);
+                            return state;
+                        });
+                        if (props.onClose) props.onClose();
+                    }
+                }, [readyToClose]);
+                const spring = useSpring({
+                    from: {
+                        progress: 0,
+                        scale: readyToClose ? 1 : 0
+                    },
+                    to: {
+                        progress: 100, 
+                        scale: readyToClose ? 0 : 1
+                    },
+                    onRest: _ => {
+                        setReadyToClose(true);
+                    },
+                    config: key => {
+                        let duration = time;
+                        if(key === "scale") duration = 100;
+
+                        return {duration};
+                    },
+                });
+
+                return React.createElement(animated.div, {
+                    className: "qwert-toast",
+                    id: id,
+                    onMouseOver: _ => {
+                        spring.progress.pause();
+                    },
+                    onMouseOut: _ => {
+                        spring.progress.resume();
+                    },
+                    style: {
+                        scale: spring.scale.to(e => {
+                            return e;
+                        })
+                    },
+                    children: [
+                        icon && React.createElement("div", {
+                            className: "qwert-toast-icon-container",
+                            children: icon
+                        }),
+                        avatar && React.createElement("div", {
+                            className: "qwert-toast-avatar-container",
+                            children: React.createElement("img", {src: avatar, className: "qwert-toast-avatar"})
+                        }),
+                        React.createElement("div", {onClick: function() {
+                            onClick(),
+                            setReadyToClose(true)
+                        }}, 
+                        author && React.createElement("strong", {
+                            className: "qwert-toast-author",
+                           }, author),
+                           React.createElement("div", {
+                               className: `qwert-toast-text ${classes.flex} ${classes.horizontal} ${classes.noWrap} ${classes.justifyStart}`
+                           }, children)),
+                        React.createElement(animated.div, {
+                            className: "qwert-toast-bar",
+                            style: {
+                                width: spring.progress.to(e => `${e}%`),
+                                background: color ?? colors.brand
+                            }
+                        }),
+                        React.createElement("svg", {
+                            className: "qwert-toast-close", 
+                            width: "16", height: "16", 
+                            viewBox: "0 0 24 24", 
+                            onClick: function() {
+                                onManualClose ? onManualClose() : () => {};
+                                setReadyToClose(true);
+                            }, 
+                        }, React.createElement(CloseIcon)),
+                    ]
+                })
+            },
+
+            detroy(id) {
+                const state = api.getState().toasts;
+                const toast = state.find(e => e.id === id);
+                if (!toast) return false;
+
+                if (!toast.ref.current) return false;
+                toast.ref.current.close();
+                state.toasts.splice(state.toasts.indexOf(toast), 1);
+                api.setState({toasts});
+            },
+
+            create(children, props) {
+                const id = QWERTLib.createUUID();
+
+                api.setState(state => ({toasts: state.toasts.concat({children, ...props, id})}));
+
+                return id;
+            },
+
+            initialize() {
+                const DOMElement = document.createElement("div");
+                DOMElement.className = "qwert-toasts";
+
+                function QWERTToasts() {
+                    const toasts = useStore(s => s.toasts);
+                    return toasts.map(toast => React.createElement(QWERTLib.Toasts.Toast, {
+                        ...toast,
+                        key: toast.id
+                    }));
+                }
+
+                ReactDOM.render(React.createElement(QWERTToasts, {}), DOMElement);
+                if(document.querySelector(".qwert-toasts")) return;
+                document.getElementById("app-mount").appendChild(DOMElement);
+            },
+            shutdown() {
+                const DOMElement = document.getElementsByClassName("qwert-toasts")[0];
+                ReactDOM.unmountComponentAtNode(DOMElement);
+                DOMElement.remove();
+            }
+        }
+
+        createUUID() {
+            return 'xxxxxxxxxxxxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        initialize() {
+            this.Toasts.initialize();
+        }
+
+        shutdown() {
+            this.Toasts.shutdown();
+        }
+    }
+    class plugin extends Plugin {
+        constructor() {
+            super();
+
+            this.getSettingsPanel = () => {
+                return this.buildSettingsPanel().getElement();
+            };
+
+            try{
+                // QWERTLib.Toasts.create(["Successfully started ", React.createElement("strong", null, "In App Notifications"), "!"], {
+                //     author: "QWERT Library",
+                //     color: colors.online,
+                //     icon: React.createElement(WebpackModules.findByDisplayName("Checkmark"), {
+                //         style: {
+                //             color: colors.online
+                //         }
+                //     }),
+                //     time: 6000,
+                //     onClick: () => {
+                //         
+                //     }
+                // })
+            }catch(e){
+                console.log(`%c[XSOverlayNotifier]%c Error!%c`, "color: #3a71c1;", "font-weight: 700; color: #b3001b;", "\n", e);
+                BdApi.alert("XSOverlayNotifier", "There was an error while trying to start the plugin.\n Try checking the console for any erros from this plugin.")
+            }
+
+            const om = this.onMessage.bind(this);
+            this.onMessage = e => {
+                try{
+                    om(e);
+                }catch(e){
+                    console.log(`%c[XSOverlayNotifier]%c Error!%c`, "color: #3a71c1;", "font-weight: 700; color: #b3001b;", "\n", e);
+                    try {
+                        QWERTLib.Toasts.create("There was an error while trying to start the plugin.\n Try checking the console for any erros from this plugin.", {
+                            author: "In App Notifications",
+                            color: colors.dnd,
+                            icon: React.createElement(CloseIcon, {
+                                style: {
+                                    color: colors.dnd
+                                }
+                            }),
+                            time: 7000,
+                            onClick: () => {
+                                
+                            }
+                        })
+                    }catch {
+                        BdApi.alert("XSOverlayNotifier", "There was an error while trying to start the plugin.\n Try checking the console for any erros from this plugin.")
+                    }
+                }
+            }
+            const friendRequestFunc = this.friendRequest.bind(this);
+            this.friendRequest = e => {
+                try{
+                    friendRequestFunc(e);
+                }catch(e){
+                    console.log(`%c[XSOverlayNotifier]%c Error!%c`, "color: #3a71c1;", "font-weight: 700; color: #b3001b;", "\n", e);
+                    try {
+                        QWERTLib.Toasts.create("There was an error while trying to start the plugin.\n Try checking the console for any erros from this plugin.", {
+                            author: "In App Notifications",
+                            icon: React.createElement(CloseIcon, {
+                                style: {
+                                    color: colors.dnd
+                                }
+                            }),
+                            time: 7000,
+                            onClick: () => {
+                            }
+                        })
+                    }catch {
+                        BdApi.alert("XSOverlayNotifier", "There was an error while trying to start the plugin.\n Try checking the console for any erros from this plugin.")
+                    }
+                }
+            }
+        }
+
+        onStart() {
+            Dispatcher.subscribe("MESSAGE_CREATE", this.onMessage);
+            Dispatcher.subscribe("FRIEND_REQUEST_ACCEPTED", this.friendRequest);
+            QWERTLib.initialize();
+            PluginUtilities.addStyle("QWERTLib", `
+            .qwert-toasts {
+                position: absolute;
+                right: 10px;
+                left: ${[0,1].includes(0) ? "20px" : "10px"};
+                right: 10px;
+                ${[0,1].includes(0) ? "top: 10px" : "bottom: 30px;"}
+                justify-content: flex-start;
+                align-items: ${[0,2].includes(0) ? "flex-end" : "flex-start"};
+                display: flex;
+                flex-direction: column;
+                pointer-events: none;
+                z-index: 9999;
+               }
+               .qwert-toast {
+                position: relative;
+                display: -webkit-inline-box;
+                pointer-events: all;
+                align-items: center;
+                min-height: 24px;
+                backdrop-filter: blur(5px);
+                border-radius: 3px;
+                box-shadow: var(--elevation-medium);
+                padding: 10px 12px 10px 10px;
+                max-width: 50vw;
+                opacity: 1;
+                margin-top: 10px;
+                color: white;
+                background: rgba(10,10,10,0.5);
+                overflow: hidden;
+                cursor: pointer;
+               }
+               .qwert-toast:hover .qwert-toast-image {
+                display: block;
+               }
+               .qwert-toast-image {  
+                position: relative;
+                display: none;
+                pointer-events: all;
+                min-height: 24px;
+                max-width: 50vw;
+                margin-top: 2px;
+                max-width: 300px;
+                max-height: 300px;
+               }
+               
+               .qwert-toast-text {
+                position: relative;
+                display: block;
+                max-width: 400px;
+                flex: 1 0 auto;
+                font-size: 14px;
+                font-weight: 500;
+                white-space: nowrap;
+                word-wrap: break-word;
+                overflow: hidden;
+                text-overflow: ellipsis;     
+               }
+               .qwert-toast:hover .qwert-toast-text {
+                white-space: normal;
+               }
+               .qwert-toast-author {
+                font-size: 14px;
+                max-width: 400px;
+                max-height: 24px;
+                white-space: nowrap;
+                word-wrap: break-word;
+                text-overflow: ellipsis;
+                margin-bottom: 2px;
+               }
+               .qwert-toast-bar {
+                height: 3px;
+                position: absolute;
+                bottom: 0;
+                left: 0;
+               }
+               .qwert-toast-avatar {
+                height: 22px;
+                height: 22px;
+                border-radius: 50%;
+               }
+               .qwert-toast-avatar-container {
+                padding-right: 5px;
+                margin-top: 1px;
+                top: 10px;
+               }
+               .qwert-toast-icon {
+                height: 22px;
+                height: 22px;
+                border-radius: 50%;
+                  }
+      
+               .qwert-toast-icon-container {
+                padding-right: 5px;
+                margin-top: 1px;
+                top: 10px;
+               }
+               .qwert-toast-close {
+                margin-left: 5px;
+                cursor: pointer;
+               }
+            }`);
+        }
+        
+        onMessage({message}) {
+            const author = UserStore.getUser(message.author.id);
+            const channel = Structs.Channel.fromId(message.channel_id);
+            const images = message.attachments.filter(e => typeof e?.content_type === "string" && e?.content_type.startsWith("image"));
+            const xChannel = ChannelStore.getChannel(message.channel_id);
+            const notiTime = this.settings.notiTime;
+            if(channel.id === SelectedChannelStore.getChannelId()) return false;
+            
+            let content;
+            const keywordFound = this.checkKeywords(message);
+            if(!this.supposedToNotify(message, xChannel) && !keywordFound) return;
+            let authorString = "";
+            if(channel.guild) {
+                const colorString = GuildMemberStore.getMember(channel.guild.id, author.id)?.colorString;
+                if(false && colorString) {
+                    authorString = [
+                        React.createElement("div", {
+                            style: {
+                                color: colorString ?? "white",
+                                display: "inline"
+                            }
+                        }, author.tag),
+                        ` (${channel.guild.name}, #${channel.name})`
+                    ];
+                }else{
+                    authorString = `${author.tag} (${channel.guild.name}, #${channel.name})`;
+                }
+            }
+            if(channel.type === "GROUP_DM") {
+                authorString = `${author.tag} (${channel.name})`;
+                if(!channel.name || channel.name === " " || channel.name === "") {
+                    authorString = `${author.tag} (${channel.members.map(e => e.username).join(", ")})`;
+                }
+            }
+            if(channel.type === "DM") {
+                authorString = `${author.tag}`;
+            }
+            
+            if(message.call) {
+                content = [React.createElement(CallJoin, {style: {height: "16px", width: "16px", color: colors.online, marginRight: "2px"}}), "Started a call"]
+            }
+
+            if(message.attachments.length !== 0) {
+                content = [React.createElement(ImagePlaceholder, {style: {height: "16px", width: "16px", marginRight: "2px"}}), Markdown.parse(message.content, "div", {channelId: channel.id})]
+                
+                if(message.content === "") {
+                    content = [React.createElement(ImagePlaceholder, {style: {height: "16px", width: "16px", marginRight: "2px"}}), "Attachment"]
+                }
+            }
+
+            if(message.embeds.length !== 0) {
+                content = [React.createElement(ImagePlaceholder, {style: {height: "16px", width: "16px", marginRight: "2px"}}), Markdown.parse(message.content, "div", {channelId: channel.id})];
+
+                if(message.content === "") {
+                    content = [React.createElement(ImagePlaceholder, {style: {height: "16px", width: "16px", marginRight: "2px"}}), message.embeds[0].description !== "" ? message.embeds[0].description : "Embed"];
+                }
+            }
+
+            if(message.stickers) {
+                content = [React.createElement(StickerIcon, {style: {height: "16px", width: "16px", marginRight: "2px"}}), Markdown.parse(message.content, "div", {channelId: channel.id})];
+
+                if(message.content === "") {
+                    content = [React.createElement(StickerIcon, {style: {height: "16px", width: "16px", marginRight: "2px"}}), "Sticker"];
+                }
+            }
+
+            if(images[0]) {
+                content.push(React.createElement("img", {
+                    className: "qwert-toast-image",
+                    src: images[0].url,
+                    style: {
+                        maxWidth: "300px",
+                        maxHeight: "300px"
+                    }
+                }))
+            }
+
+            if(!this.checkSettings(message, channel)) return;
+            const children = content ? content : Markdown.parse(message.content, "div", {channelId: channel.id});
+            const time = isNaN(notiTime * 1000) ? 3000 : notiTime * 1000;
+
+            // QWERTLib.Toasts.create(children, {
+            //     icon: React.createElement(Avatar.default, {
+            //         src: author.getAvatarURL(),
+            //         status: UserStatusStore.getStatus(author.id),
+            //         size: Avatar.Sizes.SIZE_32,
+            //         isMobile: UserStatusStore.isMobileOnline(author.id),
+            //     }),
+            //     author: authorString,
+            //     time,
+            //     onClick: () => {
+            //         NavigationUtils.replaceWith(`/channels/${message.guild_id || "@me"}/${message.channel_id}/${message.id}`);
+            //     },
+            //     onManualClose: () => {
+            //         if(!this.settings.markAsRead) return;
+            //         AckUtils.ack(message.channel_id);
+            //     }
+            // });
+
+            const formattedMessage = this.formatMessage(message, author);
+
+            fetch(`https://cdn.discordapp.com/avatars/${author.id}/${author.avatar}.png?size=128`).then(response => response.arrayBuffer()).then(buffer => {
+              const data = JSON.stringify({
+                messageType: 1,
+                index: 0,
+                timeout: parseFloat(this.settings.notiTime),
+                height: this.calculateHeight(this.clearMessage(formattedMessage)),
+                opacity: parseFloat(this.settings.opacity / 10),
+                volume: 0,
+                audioPath: '',
+                title: authorString,
+                content: formattedMessage,
+                useBase64Icon: true,
+                icon: Buffer.from(buffer).toString('base64'),
+                sourceApp: 'XSOverlayNotifier'
+              });
+              //console.log(`Time Last notification sent: ${cooldowntime}, the next notification can be sent at ${cooldowntime + 3000}`);
+              if(Date.now() > cooldowntime + (this.settings.notiTime * 1000))
+              {
+                //console.log(`The cooldown has passed, notification sent.`);
+                this.sendToXSOverlay(data);
+                cooldowntime = Date.now();
+              }
+            });
+
+        }
+
+        escapeRegex(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // https://stackoverflow.com/questions/3446170/escape-string-for-use-in-javascript-regex
+        }
+
+        checkKeywords(message) {
+            let found = false;
+            const {content} = message;
+            const keywords = "";
+            if(keywords.length === 0) return false;
+            
+            for(let keyword of keywords) {
+                keyword = this.escapeRegex(keyword);
+                const keywordRegex = new RegExp(`\\b${keyword}\\b`, "g");
+                if(keywordRegex.test(0 ? content : content.toLowerCase())) {
+                    found = true;
+                    break;
+                }
+            };
+            return found;
+        }
+
+
+        supposedToNotify(message, channel) {
+            if(message.author.id === UserStore.getCurrentUser().id) return false;
+            const isSuppressEveryone = MuteStore.isSuppressEveryoneEnabled(message.guild_id || "@me");
+            const isSuppressRoles = MuteStore.isSuppressRolesEnabled(message.guild_id || "@me");
+            if(MuteStore.allowAllMessages(channel)) return true;
+            return isMentioned.isRawMessageMentioned(message, UserStore.getCurrentUser().id, isSuppressEveryone, isSuppressRoles);
+        }
+
+        checkSettings(message, channel) {
+            let shouldNotify = true;
+            const ignoredUsers = "";
+            const ignoredServers = "";
+            const ignoredChannels = "";
+            const ignoreDMs = false
+            const ignoreDMGroups = false
+
+            const disableOnDnd = true;
+            const isDnd = UserStatusStore.getStatus(UserStore.getCurrentUser().id) === "dnd";
+
+            if(disableOnDnd) {
+                shouldNotify = !isDnd;
+            }
+
+            if(ignoreDMs) {
+                if(channel.type === "DM") shouldNotify = false;
+            }
+
+            if(ignoreDMGroups) {
+                if(channel.type === "GROUP_DM") shouldNotify = false;
+            }
+
+            if(ignoredUsers.includes(message.author.id)) shouldNotify = false;
+            if(ignoredServers.includes(channel.guild_id)) shouldNotify = false;
+            if(ignoredChannels.includes(channel.id)) shouldNotify = false;
+
+            return shouldNotify;
+        }
+
+        friendRequest({user}) {
+            const author = UserStore.getUser(user.id);
+            let message = "has accepted your friend request.";
+
+            // QWERTLib.Toasts.create([React.createElement(PersonAdd, {style: {height: "16px", width: "16px", color: colors.online, marginRight: "2px"}}), "Accepted your friend request."], {
+            //     author: user.tag,
+            //     avatar: user.getAvatarURL(),
+            //     onClick: () => {
+            //         UserProfileModals.open(user.id);
+            //     }
+            // });
+
+            const formattedMessage = this.formatMessage(message, author);
+
+            fetch(`https://cdn.discordapp.com/avatars/${author.id}/${author.avatar}.png?size=128`).then(response => response.arrayBuffer()).then(buffer => {
+              const data = JSON.stringify({
+                messageType: 1,
+                index: 0,
+                timeout: parseFloat(this.settings.notiTime),
+                height: this.calculateHeight(this.clearMessage(formattedMessage)),
+                opacity: parseFloat(this.settings.opacity / 10),
+                volume: 0,
+                audioPath: '',
+                title: author.tag,
+                content: formattedMessage,
+                useBase64Icon: true,
+                icon: Buffer.from(buffer).toString('base64'),
+                sourceApp: 'XSOverlayNotifier'
+              });
+              //console.log(`Time Last notification sent: ${cooldowntime}, the next notification can be sent at ${cooldowntime + 3000}`);
+              if(Date.now() > cooldowntime + 3000)
+              {
+                //console.log(`The cooldown has passed, notification sent.`);
+                this.sendToXSOverlay(data);
+                cooldowntime = Date.now();
+              }
+            });
+
+        }
+
+        onStop() {
+            Dispatcher.unsubscribe("MESSAGE_CREATE", this.onMessage);
+            Dispatcher.unsubscribe("FRIEND_REQUEST_ACCEPTED", this.friendRequest);
+            PluginUtilities.removeStyle("QWERTLib");
+            QWERTLib.shutdown();
+            Patcher.unpatchAll();
+       }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                                                      My Own Section~!
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+        sendToXSOverlay (data) 
+        {
+        let server = require('dgram').createSocket('udp4');
+        server.send(data, 42069, '127.0.0.1', () => 
+        {
+            server.close();
+        });
+        }
+
+        messageTypeToBoostLevel (type) 
+        {
+        switch (type) 
+        {
+            case 9: return 1;
+            case 10: return 2;
+            case 11: return 3;
+        }
+        }
+
+        formatEmotes (content) 
+        {
+        const matches = content.match(new RegExp('(<a?:\\w+:\\d+>)', 'g'));
+        if (!matches) 
+        {
+            return content;
+        }
+
+        for (const match of matches) 
+        {
+            content = content.replace(new RegExp(`${match}`, 'g'), `:${match.split(':')[1]}:`);
+        }
+
+        return content;
+        }
+
+        formatChannelMentions (content) 
+        {
+        const matches = content.match(new RegExp('<(#\\d+)>', 'g'));
+        if (!matches) 
+        {
+            return content;
+        }
+
+        for (const match of matches) 
+        {
+            let channelId = match.split('<#')[1];
+            channelId = channelId.substring(0, channelId.length - 1);
+            content = content.replace(new RegExp(`${match}`, 'g'), `<b><color=${blurple}>#${getChannel(channelId).name}</color></b>`);
+        }
+
+        return content;
+        }
+
+        formatMessage (msg, author) 
+        {
+        let temp = msg.content;
+        //this style of curlys is the best fight me
+        switch (msg.type) 
+        {
+            case 0:
+            case 19:
+            break;
+            case 1:
+            return `<b>${author.username}</b> added <b>${msg.mentions[0].username}</b> to the group.`;
+            case 2:
+            return `<b>${author.username}</b> removed <b>${msg.mentions[0].username}</b> from the group.`;
+            case 3:
+            return `<b>${author.username}</b> started a call.`;
+            case 4:
+            return `<b>${author.username}</b> changed the channel name: <b>${msg.content}</b>`;
+            case 5:
+            return `<b>${author.username}</b> changed the channel icon.`;
+            case 6:
+            return `<b>${author.username}</b> pinned <b>a message</b> to this channel.`;
+            case 7:
+            return `<b>${author.username}</b> joined the server.`;
+            case 8:
+            return `<b>${author.username}</b> just <b><color=${booster}boosted</color></b> the server!`;
+            case 9:
+            case 10:
+            case 11:
+            return `<b>${author.username}</b> just <b><color=${booster}boosted</color></b> the server! <b>${getGuild(msg.guild_id).name}</b> has achieved <b>Level ${messageTypeToBoostLevel(msg.type)}!</b>`;
+            case 12:
+            return `<b>${author.username}</b> has added <b>${msg.content}</b> notifications to this channel.`;
+            case 14:
+            case 15:
+            case 16:
+            case 17:
+            case 18:
+            case 20:
+            case 21:
+            case 22:
+            default:
+            return `Type of message (${msg.type}) not implemented. Please check yourself.`;
+        }
+
+        if (temp.length === 0 && msg.attachments.length > 0) 
+        {
+            return `Uploaded ${msg.attachments[0].filename}`;
+        }
+
+        if (temp.length === 0 && msg.embeds > 0) 
+        {
+            temp = msg.embeds[0].title;
+        }
+
+        temp = temp.replace(new RegExp('@everyone', 'g'), `<b><color=${blurple}>@everyone</color></b>`);
+        temp = temp.replace(new RegExp('@here', 'g'), `<b><color=${blurple}>@here</color></b>`);
+
+        for (const mention of msg.mentions) 
+        {
+            temp = temp.replace(new RegExp(`<@!?${mention.id}>`, 'g'), `<b><color=${blurple}>@${mention.username}</color></b>`);
+        }
+
+        if (msg.mention_roles.length > 0) 
+        {
+            const { roles } = getGuild(msg.guild_id);
+            for (const roleId of msg.mention_roles) 
+            {
+            const role = roles[roleId];
+            temp = temp.replace(new RegExp(`<@&${roleId}>`, 'g'), `<b><color=#${parseInt(role.color).toString(16)}>@${role.name}</color></b>`);
+            }
+        }
+
+        temp = this.formatEmotes(temp);
+        temp = this.formatChannelMentions(temp);
+
+        return temp.length !== 0 ? temp : 'Empty';
+        }
+
+        clearMessage (content) 
+        {
+        return content.replace(new RegExp('<[^>]*>', 'g'), '');
+        }
+
+        getUserFromRawRecipients (userId, recipients) 
+        {
+        for (const recipient of recipients) 
+        {
+            if (recipient.id === userId) 
+            {
+            return recipient;
+            }
+        }
+        }
+
+        formatGroupDmTitle (channel, msg) 
+        {
+        if (channel.name !== '') 
+        {
+            return channel.name;
+        }
+        let temp = '';
+        const recipients = [];
+        recipients.push(...channel.rawRecipients);
+        if (!recipients.filter(r => r.id === msg.author.id).length === 0) 
+        {
+            recipients.push(msg.author);
+        }
+        for (const recipient of channel.recipients) 
+        {
+            temp += `${getUserFromRawRecipients(recipient, recipients).username}, `;
+        }
+        return temp.substring(0, temp.length - 2);
+        }
+
+        formatTitle (channel, msg, author) 
+        {
+        switch (channel.type) 
+        {
+            case 0:
+            case 5:
+            case 6:
+            if (channel.parent_id) 
+            {
+                const category = getChannel(channel.parent_id);
+                return `${msg.member.nick ? msg.member.nick : author.username} (#${channel.name}, ${category.name})`;
+            }
+            return `${msg.member.nick ? msg.member.nick : author.username} (#${channel.name})`;
+            case 1:
+            return author.username;
+            case 3:
+            return `${author.username} (${formatGroupDmTitle(channel, msg)})`;
+        }
+        }
+
+        calculateHeight (content) 
+        {
+        if (content.length <= 100) 
+        {
+            return 100;
+        } 
+        else if (content.length <= 200) 
+        {
+            return 150;
+        } 
+        else if (content.length <= 300) 
+        {
+            return 200;
+        }
+        return 250;
+        }
+
+
+
+
+    }
+
+    return plugin;
+})(global.ZeresPluginLibrary.buildPlugin(config));
