@@ -599,18 +599,18 @@ module.exports = !global.ZeresPluginLibrary ? class {
                 timeout: parseFloat(this.settings.notiTime),
                 height: this.calculateHeight(this.clearMessage(formattedMessage)),
                 opacity: parseFloat(this.settings.opacity / 10),
-                volume: 0,
-                audioPath: '',
+                volume: 0.7,
+                audioPath: 'default',
                 title: authorString,
                 content: formattedMessage,
                 useBase64Icon: true,
                 icon: Buffer.from(buffer).toString('base64'),
                 sourceApp: 'XSOverlayNotifier'
               });
-              //console.log(`Time Last notification sent: ${cooldowntime}, the next notification can be sent at ${cooldowntime + 3000}`);
+              console.log(`Time Last notification sent: ${cooldowntime}, the next notification can be sent at ${cooldowntime + 3000}`);
               if(Date.now() > cooldowntime + (this.settings.notiTime * 1000))
               {
-                //console.log(`The cooldown has passed, notification sent.`);
+                console.log(`The cooldown has passed, sending notification`);
                 this.sendToXSOverlay(data);
                 cooldowntime = Date.now();
               }
@@ -733,11 +733,11 @@ module.exports = !global.ZeresPluginLibrary ? class {
 
         sendToXSOverlay (data) 
         {
-        let server = require('dgram').createSocket('udp4');
-        server.send(data, 42069, '127.0.0.1', () => 
-        {
-            server.close();
-        });
+            let server = require('dgram').createSocket('udp4');
+            server.send(data, 42069, '127.0.0.1', () => 
+            {
+                server.close();
+            });
         }
 
         messageTypeToBoostLevel (type) 
